@@ -1,0 +1,21 @@
+This program is written in BBC BASIC for windows and is designed to train very small neural networks for hand written digit recognition. This is primarily intended as a teaching / educational tool.
+It is by no means optimised, the idea was simply to graphically demonstrate the trianing of a network using mini-batc gradient descent with momentum. In addition there is an Acorn Electron / BBC model B
+compatible version of the code which can be pasted into the Beebem Emulator to run inference. This program could be typed up into the real machine as I once did, but be warned that this is a quite laborious
+task and requires many hours to manually input with no mistakes in the weights. This could be mitigated with some kind of modern laptop-acorn computer interface perhaps.
+
+Instructions:
+This program requires the full version of RT Russell's BBC BASIC for windows.
+
+1. Run the program. You will be taken into a full screen window where you can draw digits on a grid. After drawing one, press the green tick or middle click to move to the next. you must repeat
+   the digits 0-9 10 times over in that order. Then type proc_save_batch(XXXX) where XXXX is a number greater that 1000 (see example data files) to save them. there are 73 example mini-batch files
+   already prepared (7300 numbers)
+
+2. Once happy, quit the program (type quit or *quit) and edit the code to set the number of neurons in layers 1 and 2 (L1% and L2%). set the learning rate, momentum and any other hyper parameters.
+   _top_train_batch% is the last batch that will be used for training all batches beyond this will be used for validation. batches% is the total number of batches which should be the batch number of the 
+   last mini-batch + 1 as it is 0-indexed. 
+
+3. Goto the procedure proc_train and set the name of the model to be saved near the end of the procedure. It will be model 5 by default. The program will only save the model if the validation accuracy
+   has increased from the previous best.
+
+4. Run the program and press escape. then in the console, type proc_train or press f1 and then hit enter. the program will then train on the specified minibatches showing a graphical display of the weights
+   and activations of the network as shown in Figure 1 in the respository along with a Loss / Accuracy graph and confusion matrix which is updated at the end of each training Epoch.
