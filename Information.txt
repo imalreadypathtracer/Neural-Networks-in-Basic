@@ -28,3 +28,6 @@ This program requires the full version of RT Russell's BBC BASIC for windows.
    BBC compatible program. Bear in mind that a BBC or electron only has 32K of ram and as such you may have difficulty fitting the program and the networks parameters into memory with more than 10 neurons
    in each hidden layer.
 
+
+*** I may eventually upload a compiled exe of this code and the raw cassette audio at 1200 baud of the bbc compatible version. Type chain "NUMBER" and play the file into the BBC via a 3.5mm jack - BBC
+tape input cable ***
