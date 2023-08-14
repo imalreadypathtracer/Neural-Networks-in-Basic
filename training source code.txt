@@ -1,0 +1,1486 @@
+      rem neural networks in BBC basic 4 windows.
+      himem = himem + 10000: rem Allocate MOARRR ram
+
+      rem create a fullscreen window, set font and text colours
+      GWL_STYLE = -16
+      HWND_TOPMOST = -1
+      WS_VISIBLE = &10000000
+      WS_CLIPCHILDREN = &2000000
+      WS_CLIPSIBLINGS = &4000000
+      sys "GetSystemMetrics", 0 to xscreen%
+      sys "GetSystemMetrics", 1 to yscreen%
+      sys "SetWindowLong", @hwnd%, GWL_STYLE, WS_VISIBLE + \
+      \                    WS_CLIPCHILDREN + WS_CLIPSIBLINGS
+      sys "SetWindowPos", @hwnd%, HWND_TOPMOST, 0, 0, xscreen%, yscreen%, 0
+      vdu 26
+      colour 128
+      colour 7
+      cls
+      off
+
+      vdu 19, 4, 16, 100, 120, 255
+      vdu 19, 1, 16, 255, 140, 0
+      vdu 19, 3, 16, 255, 0, 0
+
+      rem define useful f keys
+
+      *key 1 "proc_train"
+      *key 2 "learning_rate = "
+      *key 3 "proc_save_batch("
+      *key 4 "i%=0:t% = "
+      *key 5 "proc_transfer_data(t%)|M"
+      *key 6 "proc_forward|M"
+      *key 7 "cls:proc_draw_net(false)|M"
+      *key 8 "proc_load_model("
+
+
+      rem define layer sizes -------------------------------------------- L0% must be a square number, L1% must be even (for rendering purposes)
+
+      L0% = 121
+      L1% = 10
+      L2% = 10
+      L3% = 10
+
+      learning_rate = 0.005
+      learning_decay = 0.995
+      training_size% = 100
+      batches% = 73
+      _top_train_batch% = 64
+      num_val_batches% = batches% - _top_train_batch%
+      init_batch_index% = 1000
+      max_epochs% = 1000
+      hist_idx% = 0
+      DO_FINETUNE% = false
+      _DATA_WEIGHT = 1.5
+      momentum = 0.05
+
+      MAX_WEIGHT = 1
+
+      rem (1 is subtracted because the number is not the number of elements but the maximum index in a zero indexed system)
+      rem inputs and loss function
+      _width% = sqr(L0%)
+      dim raw_data(training_size%, _width%-1, _width%-1)
+      dim shuffle_idx%(training_size%)
+      SHUFFLE% = true
+      dim weight_array(_width%-1, _width%-1)
+      dim ground_truth%(training_size%)
+      dim history(max_epochs%)
+      dim acc_hist(max_epochs%)
+      dim _val_acc(max_epochs%)
+      output% = 0
+      dim in(L0% - 1)
+      dim G(L3% - 1)
+      dim D(L3% - 1)
+      dim L(L3% - 1)
+
+      Loss = 0
+
+      rem confusion matrix (matrix$ specifies whether the confusion matrix will show training or validation data matrix$ = "val" or "train")
+
+      dim c_mat%(L3% - 1, L3% - 1)
+      matrix$ = "train"
+
+      rem weights -------------------------------------------------------
+
+      dim L1w(L1% - 1, L0% - 1)
+      dim L2w(L2% - 1, L1% - 1)
+      dim L3w(L3% - 1, L2% - 1)
+
+
+      rem activations
+
+      dim L0a(L0% - 1)
+      dim L1a(L1% - 1)
+      dim L2a(L2% - 1)
+      dim L3a(L3% - 1)
+
+
+      rem preactivations
+
+      dim L1p(L1% - 1)
+      dim L2p(L2% - 1)
+      dim L3p(L3% - 1)
+
+
+      rem biases
+
+      dim L1b(L1% - 1)
+      dim L2b(L2% - 1)
+      dim L3b(L3% - 1)
+
+
+      rem gradients
+
+      dim L1dw(L1% - 1, L0% - 1)
+      dim L2dw(L2% - 1, L1% - 1)
+      dim L3dw(L3% - 1, L2% - 1)
+
+      dim L1db(L1% - 1)
+      dim L2db(L2% - 1)
+      dim L3db(L3% - 1)
+
+
+      rem temporary activation gradients
+
+      dim L1da(L1% - 1)
+      dim L2da(L2% - 1)
+      dim L3da(L3% - 1)
+
+      rem initialise shuffle indices
+
+      for s_idx% = 0 to training_size% - 1
+        shuffle_idx%(s_idx%) = s_idx%
+      next
+
+      rem end of array initialization ---------------------------------
+
+
+      proc_init
+      proc_create_data
+
+
+      end
+
+      rem activation function and derivatives -------------------------
+
+      def fn_sigmoid(x)
+      local y
+      y = 1 / (1 + exp(-x))
+      =y
+
+
+      def fn_ddx_sigmoid(x)
+      local y, s
+      s = fn_sigmoid(x)
+      y = s - s*s
+      =y
+
+
+      rem leaky relu (called sigmoid as function name in backprop is not dynamic)
+
+      rem def fn_sigmoid(x)
+      rem if x < 0 then x = 0.1*x
+      rem =x
+      rem
+      rem
+      rem def fn_ddx_sigmoid(x)
+      rem if x > 0 then x = 1 else x = 0.1
+      rem =x
+
+
+
+      rem parameter initialization (glorot uniform) ------------------------------------
+
+      def proc_init
+      local indexL0%, indexL1%, indexL2%, indexL3%, init
+
+      rem layer 0 - layer 1 connection weights
+      for indexL1% = 0 to L1%-1
+        for indexL0% = 0 to L0%-1
+          init = rnd(1)*2 - 1
+          rem init = init * sqr(10/L0%)
+          L1w(indexL1%, indexL0%) = init
+        next
+      next
+
+      rem layer 1 - 2 connection weights
+      for indexL2% = 0 to L2%-1
+        for indexL1% = 0 to L1%-1
+          init = rnd(1)*2 - 1
+          rem init = init * sqr(10/L1%)
+          L2w(indexL2%, indexL1%) = init
+        next
+      next
+
+      rem layer 2 - 3 connection weights
+      for indexL3% = 0 to L3%-1
+        for indexL2% = 0 to L2%-1
+          init = rnd(1)*2 - 1
+          rem init = init * sqr(10/L2%)
+          L3w(indexL3%, indexL2%) = init
+        next
+      next
+
+      rem layer 1 biases
+      L1b() = 0
+
+      rem layer 2 biases
+      L2b() = 0
+
+      rem layer 3 biases
+      L3b() = 0
+
+      endproc
+
+
+      rem zero grad ---------------------------------------------------
+
+      def proc_zerograd
+      L1dw() *= momentum
+      L2dw() *= momentum
+      L3dw() *= momentum
+
+      L1db() *= momentum
+      L2db() *= momentum
+      L3db() *= momentum
+      endproc
+
+
+      rem forward pass ------------------------------------------------
+
+      def proc_forward
+      local indexL0%, indexL1%, indexL2%, indexL3%
+      local s
+
+      rem reset all activations
+      L0a() = 0
+      L1a() = 0
+      L2a() = 0
+      L3a() = 0
+
+      rem pass input tensor to layer 0 activations
+      L0a() = in()
+
+      rem first hidden layer ------------------------------------------
+      rem calculate first layer preactivations (weighted sums + biases)
+      for indexL1% = 0 to L1% - 1
+        s = 0
+        for indexL0% = 0 to L0% - 1
+          s = s + L0a(indexL0%) * L1w(indexL1%, indexL0%)
+        next
+        s = s + L1b(indexL1%)
+        L1p(indexL1%) = s
+      next
+
+      rem calculate first layer activations (activation function (sigmoid) of preactivations)
+      for indexL1% = 0 to L1% - 1
+        L1a(indexL1%) = fn_sigmoid(L1p(indexL1%))
+      next
+
+      rem second hidden layer -----------------------------------------
+      rem calculate second layer preactivations
+      for indexL2% = 0 to L2% - 1
+        s = 0
+        for indexL1% = 0 to L1% - 1
+          s = s + L1a(indexL1%) * L2w(indexL2%, indexL1%)
+        next
+        s = s + L2b(indexL2%)
+        L2p(indexL2%) = s
+      next
+
+      rem second layer activations
+      for indexL2% = 0 to L2% - 1
+        L2a(indexL2%) = fn_sigmoid(L2p(indexL2%))
+      next
+
+      rem output layer ------------------------------------------------
+      rem calculate third layer preactivations
+      for indexL3% = 0 to L3% - 1
+        s = 0
+        for indexL2% = 0 to L2% - 1
+          s = s + L2a(indexL2%) * L3w(indexL3%, indexL2%)
+        next
+        s = s + L3b(indexL3%)
+        L3p(indexL3%) = s
+      next
+
+      rem third layer activations
+      for indexL3% = 0 to L3% - 1
+        L3a(indexL3%) = fn_sigmoid(L3p(indexL3%))
+      next
+
+      endproc
+
+
+      rem calculate loss function -------------------------------------
+
+      def proc_loss
+      local indexL3%
+      D() = 0
+      L() = 0
+      for indexL3% = 0 to L3% - 1
+        D(indexL3%) = G(indexL3%) - L3a(indexL3%)
+        L(indexL3%) = D(indexL3%)^2
+      next
+
+      Loss = sum(L())
+
+      endproc
+
+
+      rem backpropagation ---------------------------------------------
+
+      rem calculate gradients -----------------------------------------
+
+      rem efficient backpropagation
+
+      def proc_grads(_data_weight)
+      local indexL0%, indexL1%, indexL2%, indexL3%, grad
+
+      L1da() = 0
+      L2da() = 0
+      L3da() = 0
+
+      rem calculate L3 activation gradients and L3 bias gradients
+      for indexL3% = 0 to L3% - 1
+        L3da(indexL3%) = -2 * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%))
+        L3db(indexL3%) += L3da(indexL3%) * _data_weight
+      next
+
+      rem L2 activation gradients and L2 biases + L3 weights
+      for indexL2% = 0 to L2% - 1
+        grad = fn_ddx_sigmoid(L2p(indexL2%))
+        for indexL3% = 0 to L3% - 1
+          L2da(indexL2%) += L3da(indexL3%) * L3w(indexL3%, indexL2%) * grad
+          L3dw(indexL3%, indexL2%) += L3da(indexL3%) * L2a(indexL2%) * _data_weight
+        next
+        L2db(indexL2%) += L2da(indexL2%) * _data_weight
+      next
+
+      rem L1 activation gradients and L1 biases + L2 weights
+      for indexL1% = 0 to L1% - 1
+        grad = fn_ddx_sigmoid(L1p(indexL1%))
+        for indexL2% = 0 to L2% - 1
+          L1da(indexL1%) += L2da(indexL2%) * L2w(indexL2%, indexL1%) * grad
+          L2dw(indexL2%, indexL1%) += L2da(indexL2%) * L1a(indexL1%) * _data_weight
+        next
+        L1db(indexL1%) += L1da(indexL1%) * _data_weight
+      next
+
+      rem L1 weights
+      for indexL0% = 0 to L0% - 1
+        for indexL1% = 0 to L1% - 1
+          L1dw(indexL1%, indexL0%) += L1da(indexL1%) * L0a(indexL0%) * _data_weight
+        next
+      next
+
+      endproc
+
+
+      rem old inefficient algorithm
+
+      def proc_get_grads
+      local indexL0%, indexL1%, indexL2%, indexL3%, precursor, prec2, prec3
+      local grad
+
+
+      rem L3 weight gradients
+
+      for indexL3% = 0 to L3% - 1
+        precursor = -2 * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%))
+        for indexL2% = 0 to L2% - 1
+          grad = 0
+          grad = grad + precursor * L2a(indexL2%)
+          L3dw(indexL3%, indexL2%) += grad
+        next
+      next
+
+
+      rem L3 bias gradients
+
+      for indexL3% = 0 to L3% -1
+        grad = 0
+        grad = grad + (-2 * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%)))
+        L3db(indexL3%) += grad
+      next
+
+
+      rem L2 weight gradients
+
+      for indexL1% = 0 to L1% - 1
+        precursor = -2 * L1a(indexL1%)
+        for indexL2% = 0 to L2% - 1
+          grad = 0
+          prec2 = precursor * fn_ddx_sigmoid(L2p(indexL2%))
+          for indexL3% = 0 to L3% - 1
+            grad = grad + prec2 * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%)) * L3w(indexL3%, indexL2%)
+          next
+          L2dw(indexL2%, indexL1%) += grad
+        next
+      next
+
+
+      rem L2 bias gradients
+
+      for indexL2% = 0 to L2% - 1
+        grad = 0
+        precursor = -2 * fn_ddx_sigmoid(L2p(indexL2%))
+        for indexL3% = 0 to L3% - 1
+          grad = grad + precursor * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%)) * L3w(indexL3%, indexL2%)
+        next
+        L2db(indexL2%) += grad
+      next
+
+
+      rem L1 weight gradients
+
+      for indexL0% = 0 to L0% - 1
+        precursor = -2 * L0a(indexL0%)
+        for indexL1% = 0 to L1% - 1
+          grad = 0
+          prec2 = precursor * fn_ddx_sigmoid(L1p(indexL1%))
+          for indexL2% = 0 to L2% - 1
+            prec3 = prec2 * fn_ddx_sigmoid(L2p(indexL2%)) * L2w(indexL2%, indexL1%)
+            for indexL3% = 0 to L3% - 1
+              grad = grad + prec3 * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%)) * L3w(indexL3%, indexL2%)
+            next
+          next
+          L1dw(indexL1%, indexL0%) += grad
+        next
+      next
+
+
+      rem L1 bias gradients
+
+      for indexL1% = 0 to L1% - 1
+        grad = 0
+        precursor = -2 * fn_ddx_sigmoid(L1p(indexL1%))
+        for indexL2% = 0 to L2% - 1
+          prec2 = precursor * fn_ddx_sigmoid(L2p(indexL2%)) * L2w(indexL2%, indexL1%)
+          for indexL3% = 0 to L3% - 1
+            grad = grad + prec2 * D(indexL3%) * fn_ddx_sigmoid(L3p(indexL3%)) * L3w(indexL3%, indexL2%)
+          next
+        next
+        L1db(indexL1%) += grad
+      next
+
+      endproc
+
+
+      rem update parameters -------------------------------------------
+
+      def proc_update_params
+
+      rem weights
+      L1w() -= L1dw() * learning_rate
+      L2w() -= L2dw() * learning_rate
+      L3w() -= L3dw() * learning_rate
+
+      rem biases
+      L1b() -= L1db() * learning_rate
+      L2b() -= L2db() * learning_rate
+      L3b() -= L3db() * learning_rate
+
+      endproc
+
+
+      def proc_training_iter(fine_tune%)
+      proc_forward
+      proc_loss
+      if fine_tune% = false then proc_grads(1)
+      if fine_tune% = true then
+        proc_get_output
+        if output% <> ground_truth%(t%) then proc_grads(_DATA_WEIGHT) else proc_grads(1)
+      endif
+      endproc
+
+
+      def proc_train
+      *refresh off
+      old_loss = 0
+      old_accuracy = 0
+      old_val = 0
+      t% = 0: i% = 0
+      proc_draw_net(false)
+
+      for i% = hist_idx% to max_epochs%
+  
+        full_loss = 0
+        acc_counter% = 0
+        _val_counter% = 0
+        for b% = 0 to batches% - 1
+          if SHUFFLE% = true then proc_shuffle
+          proc_load_batch(init_batch_index% + b%)
+          for t% = 0 to training_size%-1
+            proc_transfer_data(shuffle_idx%(t%))
+            if b% < _top_train_batch% then
+              proc_training_iter(DO_FINETUNE%)
+            else
+              proc_forward
+            endif
+            proc_get_output
+            if matrix$ = "val" then
+              if b% >= _top_train_batch% then c_mat%(output%, ground_truth%(shuffle_idx%(t%))) += 1
+            else
+              if b% < _top_train_batch% then c_mat%(output%, ground_truth%(shuffle_idx%(t%))) += 1
+            endif
+      
+            full_loss += Loss
+            if output% = ground_truth%(shuffle_idx%(t%)) and b% < _top_train_batch% then acc_counter% = acc_counter% + 1
+            if output% = ground_truth%(shuffle_idx%(t%)) and b% >= _top_train_batch% then _val_counter% = _val_counter% + 1
+            if t% mod 20 = 0 then
+              gcol 0, 0
+              rectangle fill 0, 790, 740, 2160
+              proc_draw_net(true)
+            endif
+            *font lucida console, 15
+            colour 7
+            printtab(1,0);"       Epoch: ";i%; "   "
+            printtab(1,1);"  Mini-batch: ";b%;"   "
+            printtab(1,2);"   Iteration: ";t%; "   "
+            printtab(1,3);"  Data index: ";shuffle_idx%(t%);"   "
+            printtab(1,4);"Ground Truth: ";ground_truth%(shuffle_idx%(t%));"   "
+            printtab(1,5);"  Prediction: ";output%;"   "
+            colour 4
+            printtab(1,7);"        Loss: ";int(old_loss*100000)/100000;"   "
+            colour 1
+            printtab(1,8);"    Accuracy: ";int(old_accuracy*10000)/10000;"  (";int(old_accuracy*10000)/100;"%)";"   "
+            colour 2
+            printtab(1,9);"Val accuracy: ";int(old_val*10000)/10000;"  (";int(old_val*10000)/100;"%)";"   "
+            *refresh
+          next
+          if b% < _top_train_batch% then proc_update_params
+          if b% < _top_train_batch% then proc_zerograd
+        next
+        cls
+        old_loss = full_loss / (training_size%*_top_train_batch%)
+        history(i%) = old_loss
+        old_accuracy = acc_counter% / (training_size%*_top_train_batch%)
+        acc_hist(i%) = old_accuracy
+        if num_val_batches% > 0 then old_val = _val_counter% / (training_size%*num_val_batches%) else old_val = 0
+        if old_val > fn_max_val then vdu 7:proc_save_model("model5")
+        _val_acc(i%) = old_val
+        proc_draw_net(false)
+        hist_idx% = i% + 1
+        proc_reset_matrix
+        learning_rate = learning_rate * learning_decay
+        rem proc_save_model("model3")
+      next
+      endproc
+
+
+
+      rem create_training_data ------------------------------------------------------------------------------------------------------------------
+
+      rem rendering tools ---------------------------------------------
+
+      def proc_draw_grid(dat_ind%, x_off, y_off, scale, type$, text)
+      local x, y, xindex%, yindex%, _w, col
+      gcol 0, 14
+      _w = scale / _width%
+      for yindex% = 0 to _width%-1
+        for xindex% = 0 to _width%-1
+          x = xindex%*(scale/_width%) + x_off
+          y = y_off + yindex%*(scale/_width%)
+          if type$ = "data" then
+            if raw_data(dat_ind%, xindex%, yindex%) > 0 then
+              vdu 19, 14, 16, 0, raw_data(dat_ind%, xindex%, yindex%)*250, 0
+            else
+              vdu 19, 14, 16, raw_data(dat_ind%, xindex%, yindex%)*-250, 0, 0
+            endif
+          else
+            col = weight_array(xindex%, yindex%) * (1/MAX_WEIGHT)
+            if weight_array(xindex%, yindex%) > 0 then
+              vdu 19, 14, 16, col*50, col*230, col*255
+            else
+              vdu 19, 14, 16, weight_array(xindex%, yindex%)*-250*(1/MAX_WEIGHT), 0, weight_array(xindex%, yindex%)*-50*(1/MAX_WEIGHT)
+            endif
+          endif
+          gcol 14
+          rectangle fill x, y, _w
+          if text=true then
+            sze% = scale / 150
+            oscli "font "+"lucida console"+","+str$sze%
+            vdu 5
+            move x-80*(scale/1500), y+60*(scale/1500)
+            gcol 7
+            if weight_array(xindex%, yindex%) > 0.5 then gcol 0,0
+            if type$ = "weights" then print int(weight_array(xindex%, yindex%)*100)/100
+            vdu 4
+          endif
+        next
+      next
+
+      if type$ = "data" then gcol 7 else gcol 8
+      for x = 0 to _width%
+        move x*(scale/_width%) + x_off, y_off
+        draw x*(scale/_width%) + x_off,y_off+scale
+      next
+      for y = 0 to _width%
+        move x_off, y_off + y*(scale/_width%)
+        draw x_off + scale, y_off+ y*(scale/_width%)
+      next
+
+      endproc
+
+
+      rem draw neural network diagram
+
+      def proc_draw_net(lite%)
+      local indexL0%, indexL1%, indexL2%, indexL3%, y, y1, y2, y3, max_act, xo, col
+      proc_draw_grid(shuffle_idx%(t%), 250, 800, 400, "data", false)
+      proc_loss_graph
+      if lite% = false then proc_plot_matrix(100, 100, 650)
+      *font lucida console, 11
+      xo = 0
+      if L1% >= 12 then
+        *font lucida console, 10
+      endif
+      if L1% >= 14 then
+        *font lucida console, 9
+        xo = 18
+      endif
+      if L1% >= 16 then
+        *font lucida console, 8
+        xo = 32
+      endif
+      if L1% >= 18 then
+        *font lucida console, 7
+        xo = 48
+      endif
+      if L1% >= 20 then
+        *font lucida console, 7
+        xo = 48
+      endif
+      if L1% >= 22 then
+        *font lucida console, 6
+        xo = 50
+      endif
+
+
+      vdu 5
+      max_act = fn_max_act(1)
+      if max_act < 1 then max_act = 1
+      for indexL1% = 0 to L1% - 1 step 2
+        y = 200 + indexL1%*(1860/L1%)
+        y2 = 200 + indexL1%*(1960/L1%)
+        y3 = 200 + (indexL1%+1)*(1960/L1%)
+        gcol 7
+        if lite% = false then
+          move 1000+300*(10/L1%), y+80*(10/L1%)
+          draw 2000, y2
+          move 1000+400*(10/L1%)+300*(10/L1%), y+220*(10/L1%)
+          draw 2000, y3
+        endif
+        circle fill 2000, y2, 80*(10/L1%)
+        circle fill 2000, y3, 80*(10/L1%)
+        gcol 13
+        vdu 19, 13, 16, L1a(indexL1%)*255*(1/max_act), L1a(indexL1%)*255*(1/max_act), L1a(indexL1%)*255*(1/max_act)
+        if L1a(indexL1%) < 0 then vdu 19,13,16,0,0,0
+        circle fill 2000, y2, 68*(10/L1%)
+        if L1a(indexL1%) > 0.4*max_act then gcol 0,0 else gcol 7
+        move 1870+xo, y2+6
+        if L1% < 30 then print int(L1a(indexL1%)*100)/100
+        gcol 13
+        vdu 19, 13, 16, L1a(indexL1%+1)*255*(1/max_act), L1a(indexL1%+1)*255*(1/max_act), L1a(indexL1%+1)*255*(1/max_act)
+        if L1a(indexL1%+1) < 0 then vdu 19,13,16,0,0,0
+        circle fill 2000, y3, 68*(10/L1%)
+        if L1a(indexL1%+1) > 0.4*max_act then gcol 0,0 else gcol 7
+        move 1870+xo, y3+6
+        if L1% < 30 then print int(L1a(indexL1%+1)*100)/100
+        if lite% = false then
+          proc_transfer_weights(indexL1%)
+          MAX_WEIGHT = fn_max_weight(1, indexL1%)
+          proc_draw_grid(t%, 1000, y, 300*(10/L1%), "weights", false)
+          proc_transfer_weights(indexL1%+1)
+          MAX_WEIGHT = fn_max_weight(1, indexL1%+1)
+          proc_draw_grid(t%, 1000+400*(10/L1%), y, 300*(10/L1%), "weights", false)
+        endif
+      next
+
+      *font lucida console, 11
+      xo = 0
+      if L2% >= 12 then
+        *font lucida console, 10
+      endif
+      if L2% >= 14 then
+        *font lucida console, 9
+        xo = 18
+      endif
+      if L2% >= 16 then
+        *font lucida console, 8
+        xo = 32
+      endif
+      if L2% >= 18 then
+        *font lucida console, 7
+        xo = 48
+      endif
+      if L2% >= 20 then
+        *font lucida console, 7
+        xo = 48
+      endif
+      if L2% >= 22 then
+        *font lucida console, 6
+        xo = 50
+      endif
+
+
+
+      max_act = fn_max_act(2)
+      if max_act < 1 then max_act = 1
+      for indexL2% = 0 to L2% - 1
+        y = 200 + indexL2%*(1960/L2%)
+        gcol 7
+        circle fill 2700, y, 80*(10/L2%)
+        gcol 13
+        vdu 19, 13, 16, L2a(indexL2%)*255*(1/max_act), L2a(indexL2%)*255*(1/max_act), L2a(indexL2%)*255*(1/max_act)
+        if L2a(indexL2%) < 0 then vdu 19,13,16,0,0,0
+        circle fill 2700, y, 68*(10/L2%)
+        if L2a(indexL2%) > 0.4*max_act then gcol 0,0 else gcol 7
+        move 2570+xo, y+6
+        if L2% < 30 then print int(L2a(indexL2%)*100)/100
+      next
+
+      gcol 0,0
+      rectangle fill 3500, 0, 340, 2160
+      proc_get_output
+      if output% = ground_truth%(shuffle_idx%(t%)) then gcol 2 else gcol 3
+      circle fill 3578, 202 + output%*(1960/L3%), 64
+      gcol 0,0
+      circle fill 3578, 202 + output%*(1960/L3%), 56
+
+      max_act = fn_max_act(3)
+      if max_act < 1 then max_act = 1
+      for indexL3% = 0 to L3% - 1
+        y = 200 + indexL3%*(1960/L3%)
+        gcol 7
+        circle fill 3400, y, 80*(10/L3%)
+        gcol 13
+        vdu 19, 13, 16, L3a(indexL3%)*255*(1/max_act), L3a(indexL3%)*255*(1/max_act), L3a(indexL3%)*255*(1/max_act)
+        if L3a(indexL3%) < 0 then vdu 19,13,16,0,0,0
+        circle fill 3400, y, 68*(10/L3%)
+        *font lucida console, 11
+        if L3a(indexL3%) > 0.4*max_act then gcol 0,0 else gcol 7
+        move 3270, y+10
+        print int(L3a(indexL3%)*100)/100
+        *font lucida console, 30
+        gcol 7
+        move 3120, y+40
+        print indexL3%
+      next
+
+      if lite% = false then
+  
+        gcol 14
+        MAX_WEIGHT = fn_max_weight(2, 0)
+        for indexL2% = 0 to L2% - 1
+          for indexL1% = 0 to L1% - 1
+            y1 = 200 + indexL1%*(1960/L1%)
+            y2 = 200 + indexL2%*(1960/L2%)
+            if L2w(indexL2%, indexL1%) > 0 then
+              vdu 19, 14, 16, L2w(indexL2%, indexL1%)*50*(1/MAX_WEIGHT), L2w(indexL2%, indexL1%)*230*(1/MAX_WEIGHT), L2w(indexL2%, indexL1%)*255*(1/MAX_WEIGHT)
+            else
+              vdu 19, 14, 16, L2w(indexL2%, indexL1%)*-250*(1/MAX_WEIGHT), 0, L2w(indexL2%, indexL1%)*-50*(1/MAX_WEIGHT)
+            endif
+            move 2000 + 80*(10/L1%), y1
+            draw 2700 - 80*(10/L2%), y2
+          next
+        next
+  
+        MAX_WEIGHT = fn_max_weight(3, 0)
+        for indexL3% = 0 to L3% - 1
+          for indexL2% = 0 to L2% - 1
+            y2 = 200 + indexL2%*(1960/L2%)
+            y3 = 200 + indexL3%*(1960/L3%)
+            if L3w(indexL3%, indexL2%) > 0 then
+              vdu 19, 14, 16, L3w(indexL3%, indexL2%)*50*(1/MAX_WEIGHT), L3w(indexL3%, indexL2%)*230*(1/MAX_WEIGHT), L3w(indexL3%, indexL2%)*255*(1/MAX_WEIGHT)
+            else
+              vdu 19, 14, 16, L3w(indexL3%, indexL2%)*-250*(1/MAX_WEIGHT), 0, L3w(indexL3%, indexL2%)*-50*(1/MAX_WEIGHT)
+            endif
+            move 2700 + 80*(10/L2%), y2
+            draw 3400 - 80*(10/L3%), y3
+          next
+        next
+  
+      endif
+
+      gcol 7
+      move 750, 1000
+      draw 780, 1000
+      draw 950,50
+      draw 1050, 50
+      move 780,1000
+      draw 950,2110
+      draw 1050,2110
+      vdu 4
+      endproc
+
+
+      rem draw scaling loss graph
+
+      def proc_loss_graph
+      if i% <> 0 then
+        local max, ind%, xc%, xo
+        gcol 7
+        move 80, 1300
+        draw 720, 1300
+        move 100,1280
+        draw 100, 1700
+        move 80, 1680
+        draw 100, 1680
+        move 700, 1680
+        draw 720, 1680
+        move 700, 1280
+        draw 700, 1700
+        *font lucida console, 10
+  
+        max = 0.000001
+        for ind% = 0 to i%
+          if history(ind%) > max then max = history(ind%)
+        next
+  
+        vdu 5
+        gcol 4
+        move -90, 1310
+        print 0
+        move -90, 1690
+        print int(max*100)/100
+        gcol 1
+        move 600, 1310
+        print 0
+        move 600, 1690
+        print 1
+  
+        gcol 4
+        move 120, (history(0) / max)*380 + 1300
+        for xc% = 0 to i%-1
+          draw xc%*(560/i%)+120, (history(xc%) / max)*380 + 1300
+        next
+        gcol 1
+        move 120, acc_hist(0)*380 + 1300
+        for xc% = 0 to i%-1
+          draw xc%*(560/i%)+120, acc_hist(xc%)*380 + 1300
+        next
+        gcol 2
+        move 120, _val_acc(0)*380 + 1300
+        for xc% = 0 to i%-1
+          draw xc%*(560/i%)+120, _val_acc(xc%)*380 + 1300
+        next
+  
+  
+        xo = 0
+        if i%-1 >= 10 then xo = 10
+        if i%-1 >= 100 then xo = 20
+        if i%-1 >= 1000 then xo = 30
+        gcol 7
+        move (i%-1)*(560/i%)+120, 1300
+        draw (i%-1)*(560/i%)+120, 1280
+        move (i%-1)*(560/i%)-30+xo, 1270
+        print i% - 1
+  
+        vdu 4
+  
+      endif
+      endproc
+
+
+      rem get maximum validation from history
+
+      def fn_max_val
+      local max, ind%
+      max = 0
+      for ind% = 0 to i%
+        if _val_acc(ind%) > max then max = _val_acc(ind%)
+      next
+      =max
+
+      rem get max output
+
+      def proc_get_output
+      local max, ind, indexL3%
+      max = 0
+      ind = 0
+      for indexL3% = 0 to L3% - 1
+        if L3a(indexL3%) > max then max=L3a(indexL3%):ind = indexL3%
+      next
+      output% = ind
+      endproc
+
+      rem transfer weights from inputs to 2D array for grid display
+
+      def proc_transfer_weights(neuron_index%)
+      local ix%, iy%, _c%
+      _c% = 0
+      for iy% = 0 to _width%-1
+        for ix% = 0 to _width%-1
+          weight_array(ix%, iy%) = L1w(neuron_index%, _c%)
+          _c% = _c% + 1
+        next
+      next
+      endproc
+
+
+      rem reset training history
+
+      def proc_reset_hist
+      history() = 0
+      acc_hist() = 0
+      _val_acc() = 0
+      hist_idx% = 0
+      endproc
+
+
+      rem shuffle data indices
+
+      def proc_shuffle
+      local rep, s_idx%
+      for s_idx% = training_size% - 1 to 2 step -1
+        swap shuffle_idx%(s_idx%), shuffle_idx%(rnd(s_idx%))
+      next
+      endproc
+
+      rem transfer data from raw data 2D array into in() array as input to neural network
+
+      def proc_transfer_data(index%)
+      local ix%, iy%, _c%
+      _c%=0
+      for iy% = 0 to _width%-1
+        for ix% = 0 to _width%-1
+          in(_c%) = raw_data(index%, ix%, iy%)
+          _c% = _c% + 1
+        next
+      next
+      G() = 0
+      G(ground_truth%(index%)) = 1
+      endproc
+
+
+      rem cycle through displaying L1 weights in grid form
+
+      def proc_cycle
+      local wi%
+      for wi% = 0 to 9
+        proc_transfer_weights(wi%)
+        proc_draw_grid(400, 300, 1500, "weights", true)
+        wait 100
+      next
+      endproc
+
+
+      rem get the abs maximum weight to normalize display colours
+
+      def proc_get_max_weight
+      local max, indexL0%, indexL1%, indexL2%, indexL3%
+      max = 0
+      for indexL1% = 0 to L1% - 1
+        for indexL0% = 0 to L0% - 1
+          if abs(L1w(indexL1%, indexL0%)) > max then max = abs(L1w(indexL1%, indexL0%))
+        next
+      next
+      for indexL2% = 0 to L2% - 1
+        for indexL1% = 0 to L1% - 1
+          if abs(L2w(indexL2%, indexL1%)) > max then max = abs(L2w(indexL2%, indexL1%))
+        next
+      next
+      for indexL3% = 0 to L3% - 1
+        for indexL2% = 0 to L2% - 1
+          if abs(L3w(indexL3%, indexL2%)) > max then max = abs(L3w(indexL3%, indexL2%))
+        next
+      next
+      MAX_WEIGHT = max
+      endproc
+
+
+      rem return the maximum weights of each displayed weight grid for L1w and the layers L2w and L3w
+
+      def fn_max_weight(layer%, grid%)
+      local max, indexL0%, indexL1%, indexL2%, indexL3%
+      max = 0
+      if layer% = 1 then
+        for indexL0% = 0 to L0% - 1
+          if abs(L1w(grid%, indexL0%)) > max then max = abs(L1w(grid%, indexL0%))
+        next
+      else if layer% = 2 then
+          for indexL2% = 0 to L2% - 1
+            for indexL1% = 0 to L1% - 1
+              if abs(L2w(indexL2%, indexL1%)) > max then max = abs(L2w(indexL2%, indexL1%))
+            next
+          next
+        else if layer% = 3 then
+            for indexL3% = 0 to L3% - 1
+              for indexL2% = 0 to L2% - 1
+                if abs(L3w(indexL3%, indexL2%)) > max then max = abs(L3w(indexL3%, indexL2%))
+              next
+            next
+          endif
+        endif
+      endif
+      =max
+
+
+      rem return the maximum activation of layers for display normalization
+
+      def fn_max_act(layer%)
+      local max, indexL1%, indexL2%, indexL3%
+      max = 0
+      if layer% = 1 then
+        for indexL1% = 0 to L1% - 1
+          if L1a(indexL1%) > max then max = L1a(indexL1%)
+        next
+      else if layer% = 2 then
+          for indexL2% = 0 to L2% - 1
+            if L2a(indexL2%) > max then max = L2a(indexL2%)
+          next
+        else if layer% = 3 then
+            for indexL3% = 0 to L3% - 1
+              if L3a(indexL3%) > max then max = L3a(indexL3%)
+            next
+          endif
+        endif
+      endif
+      =max
+
+      rem create training data
+
+      def proc_grd(x_off, y_off, scale)
+      local x, y
+      gcol 7
+      for x = 0 to _width%
+        move x*(scale/_width%) + x_off, y_off
+        draw x*(scale/_width%) + x_off,y_off+scale
+      next
+      for y = 0 to _width%
+        move x_off, y_off + y*(scale/_width%)
+        draw x_off + scale, y_off+ y*(scale/_width%)
+      next
+      endproc
+
+      x = xindex%*(scale/_width%) + x_off
+      y = y_off + yindex%*(scale/_width%)
+
+      def proc_create_data
+      local x, y, m, tr%, num%, dx%, dy%, xx, yy, num$, _w
+      _w = 1500 / _width%
+      off
+      for tr% = 0 to training_size% - 1
+        cls
+        *font lucida console, 20
+        proc_draw_grid(tr%, 400, 300, 1500, "data", false)
+        repeat
+          mouse xx, yy, m
+          x = xx
+          y = yy
+    
+          gcol 7
+          rectangle 2200, 1700, 100
+          rectangle 2200, 1500, 100
+          gcol 1
+          move 2200, 1700
+          draw 2300, 1800
+          move 2200, 1800
+          draw 2300, 1700
+          gcol 2
+          move 2210, 1540
+          draw 2230, 1510
+          draw 2290, 1590
+    
+          if m = 4 and x > 2200 and x < 2300 and y > 1700 and y < 1800 then
+            for dx% = 0 to _width% - 1
+              for dy% = 0 to _width% - 1
+                raw_data(tr%, dx%, dy%) = 0
+              next
+            next
+            cls
+            proc_draw_grid(tr%, 400, 300, 1500, "data", false)
+          endif
+    
+          x = x - 400
+          y = y - 300
+          x = int(x/(1500/_width%))
+          y = int(y/(1500/_width%))
+          printtab(2,2);"num: ";tr%;", x: ";x;", y: ";y;"                               "
+    
+          gcol 2
+          if m = 4 and x >= 0 and x<_width% and y>=0 and y<_width% then
+            raw_data(tr%, x, y) = 1
+            rectangle fill x*(1500/_width%)+400, y*(1500/_width%)+300, _w
+      
+            rem if m = 4 and x >= 1 then
+            rem if raw_data(tr%, x-1, y) < 0.2 then raw_data(tr%, x-1, y) = 0.2
+            rem endif
+            rem
+            rem if m = 4 and x < _width%-1 then
+            rem if raw_data(tr%, x+1, y) < 0.2 then raw_data(tr%, x+1, y) = 0.2
+            rem endif
+            rem
+            rem if m = 4 and y >= 1 then
+            rem if raw_data(tr%, x, y-1) < 0.2 then raw_data(tr%, x, y-1) = 0.2
+            rem endif
+            rem if m = 4 and y < _width%-1 then
+            rem if raw_data(tr%, x, y+1) < 0.2 then raw_data(tr%, x, y+1) = 0.2
+            rem endif
+            rem
+            rem if m = 4 and x >= 1 and y >= 1 then
+            rem if raw_data(tr%, x-1, y-1) <0.2 then raw_data(tr%, x-1, y-1) = 0.1
+            rem endif
+            rem
+            rem if m = 4 and x < _width%-1 and y >= 1 then
+            rem if raw_data(tr%, x+1, y-1) < 0.2 then raw_data(tr%, x+1, y-1) = 0.1
+            rem endif
+            rem
+            rem if m = 4 and x >= 1 and y < _width%-1 then
+            rem if raw_data(tr%, x-1, y+1) < 0.2 then raw_data(tr%, x-1, y+1) = 0.1
+            rem endif
+            rem if m = 4 and x < _width%-1 and y < _width%-1 then
+            rem if raw_data(tr%, x+1, y+1) < 0.2 then raw_data(tr%, x+1, y+1) = 0.1
+            rem endif
+      
+          endif
+    
+          if m = 1 and x >= 0 and x<_width% and y>=0 and y<_width% then raw_data(tr%, x, y) = 0:gcol 0,0:rectangle fill x*(1500/_width%)+400, y*(1500/_width%)+300, _w
+          proc_grd(400, 300, 1500)
+        until (m = 2) or (m = 4 and xx > 2200 and xx < 2300 and yy > 1500 and yy < 1600)
+        print "Enter Truth: "
+        rem num$ = get$
+        rem num% = int(val(num$))
+        num% = tr% mod 10
+        *font lucida console, 400
+        printtab(1,0);num%
+        wait 20
+        ground_truth%(tr%) = num%
+      next tr%
+      *font lucida console, 16
+      endproc
+
+
+      rem save and load data and networks ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+      rem save training batch
+
+      def proc_save_batch(batch_index%)
+      local cx%, cy%, idx%, v
+
+      rem data will be saved as "data/batch_XXXX.dat" where XXXX is batch_index% (should start at 1000)
+      rem first value saved will be the batch size, then _width%, then loop through all examples followed by their labels
+
+      path$ = @dir$ + "/data/batch_" + str$(batch_index%) + ".dat"
+      channel = openout path$
+      print#channel, training_size%
+      print#channel, _width%
+
+      for idx% = 0 to training_size% - 1
+        for cy% = 0 to _width% - 1
+          for cx% = 0 to _width% - 1
+            v = raw_data(idx%, cx%, cy%)
+            print#channel, v
+          next
+        next
+      next
+
+      for idx% = 0 to training_size% - 1
+        v = ground_truth%(idx%)
+        print#channel, v
+      next
+
+      close#channel
+      endproc
+
+
+      rem load data
+
+      def proc_load_batch(batch_index%)
+      local x, y, v, idx%
+      raw_data() = 0
+      ground_truth%() = 0
+
+      path$ = @dir$ + "/data/batch_" + str$(batch_index%) + ".dat"
+      channel = openin path$
+      input#channel, v
+      training_size% = v
+      input#channel, v
+      _width% = v
+
+      for idx% = 0 to training_size% - 1
+        for cy% = 0 to _width% - 1
+          for cx% = 0 to _width% - 1
+            input#channel, v
+            raw_data(idx%, cx%, cy%) = v
+          next
+        next
+      next
+
+      for idx% = 0 to training_size% - 1
+        input#channel, v
+        ground_truth%(idx%) = v
+      next
+
+      close#channel
+      endproc
+
+
+      rem save neural network
+
+      def proc_save_model(name$)
+      local indexL0%, indexL1%, indexL2%, indexL3%, v, hi%
+
+      path$ = @dir$ + "/models/" + name$ + ".model"
+
+      rem save L0%, L1%, L2%, L3% so when loaded the network can be unpacked efficently
+      rem then save L1w, L2w, L3w, L1b, L2b, L3b
+
+      channel = openout path$
+      print#channel, L0%, L1%, L2%, L3%
+
+      for indexL1% = 0 to L1% - 1
+        for indexL0% = 0 to L0% - 1
+          v = L1w(indexL1%, indexL0%)
+          print#channel, v
+        next
+      next
+
+      for indexL2% = 0 to L2% - 1
+        for indexL1% = 0 to L1% - 1
+          v = L2w(indexL2%, indexL1%)
+          print#channel, v
+        next
+      next
+
+      for indexL3% = 0 to L3% - 1
+        for indexL2% = 0 to L2% - 1
+          v = L3w(indexL3%, indexL2%)
+          print#channel, v
+        next
+      next
+
+      for indexL1% = 0 to L1% - 1
+        v = L1b(indexL1%)
+        print#channel, v
+      next
+
+      for indexL2% = 0 to L2% - 1
+        v = L2b(indexL2%)
+        print#channel, v
+      next
+
+      for indexL3% = 0 to L3% - 1
+        v = L3b(indexL3%)
+        print#channel, v
+      next
+
+      print#channel, hist_idx%
+      for hi% = 0 to hist_idx% - 1
+        print#channel, history(hi%)
+        print#channel, acc_hist(hi%)
+        print#channel, _val_acc(hi%)
+      next
+
+      close#channel
+      endproc
+
+
+      rem load model
+
+      def proc_load_model(name$)
+      local indexL0%, indexL1%, indexL2%, indexL3%, hi%
+
+      path$ = @dir$ + "/models/" + name$ + ".model"
+
+      channel = openin path$
+      input#channel, L0%, L1%, L2%, L3%
+
+      for indexL1% = 0 to L1% - 1
+        for indexL0% = 0 to L0% - 1
+          input#channel, v
+          L1w(indexL1%, indexL0%) = v
+        next
+      next
+
+      for indexL2% = 0 to L2% - 1
+        for indexL1% = 0 to L1% - 1
+          input#channel, v
+          L2w(indexL2%, indexL1%) = v
+        next
+      next
+
+      for indexL3% = 0 to L3% - 1
+        for indexL2% = 0 to L2% - 1
+          input#channel, v
+          L3w(indexL3%, indexL2%) = v
+        next
+      next
+
+      for indexL1% = 0 to L1% - 1
+        input#channel, v
+        L1b(indexL1%) = v
+      next
+
+      for indexL2% = 0 to L2% - 1
+        input#channel, v
+        L2b(indexL2%) = v
+      next
+
+      for indexL3% = 0 to L3% - 1
+        input#channel, v
+        L3b(indexL3%) = v
+      next
+
+      history() = 0
+      acc_hist() = 0
+      _val_acc() = 0
+
+      input#channel, hist_idx%
+      for hi% = 0 to hist_idx% - 1
+        input#channel, v
+        history(hi%) = v
+        input#channel, v
+        acc_hist(hi%) = v
+        input#channel, v
+        _val_acc(hi%) = v
+      next
+
+      close#channel
+      endproc
+
+      rem export parameters to text file
+
+      def proc_export
+      cls
+      vdu 4
+      colour 7
+      *font lucida console, 12
+      local _line%, indexL0%, indexL1%, indexL2%, indexL3%, _string$, _counter%
+      _line% = 10000
+      _counter% = 1
+      _string$ = str$(_line%) + "DATA"
+      *spool "model.txt"
+      for indexL1% = 0 to L1% - 1
+        for indexL0% = 0 to L0% - 1
+          _string$ = _string$ + str$(int(L1w(indexL1%, indexL0%)*1000)/1000)+","
+          if _counter% mod 20 = 0 then
+            print left$(_string$, len(_string$)-1)
+            _line% += 10
+            _string$ = str$(_line%) + "DATA"
+          endif
+          _counter% += 1
+        next
+      next
+      if right$(_string$,4) <> "DATA" then print left$(_string$, len(_string$)-1)
+
+      _counter% = 1
+      _line% += 10
+      _string$ = str$(_line%) + "DATA"
+      for indexL2% = 0 to L2% - 1
+        for indexL1% = 0 to L1% - 1
+          _string$ = _string$ + str$(int(L2w(indexL2%, indexL1%)*1000)/1000)+","
+          if _counter% mod 20 = 0 then
+            print left$(_string$, len(_string$)-1)
+            _line% += 10
+            _string$ = str$(_line%) + "DATA"
+          endif
+          _counter% += 1
+        next
+      next
+      if right$(_string$,4) <> "DATA" then print left$(_string$, len(_string$)-1)
+
+      _counter% = 1
+      _line% += 10
+      _string$ = str$(_line%) + "DATA"
+      for indexL3% = 0 to L3% - 1
+        for indexL2% = 0 to L2% - 1
+          _string$ = _string$ + str$(int(L3w(indexL3%, indexL2%)*1000)/1000)+","
+          if _counter% mod 20 = 0 then
+            print left$(_string$, len(_string$)-1)
+            _line% += 10
+            _string$ = str$(_line%) + "DATA"
+          endif
+          _counter% += 1
+        next
+      next
+      if right$(_string$,4) <> "DATA" then print left$(_string$, len(_string$)-1)
+
+      _counter% = 1
+      _line% += 10
+      _string$ = str$(_line%) + "DATA"
+      for indexL1% = 0 to L1% - 1
+        _string$ = _string$ + str$(int(L1b(indexL1%)*1000)/1000)+","
+      next
+      print left$(_string$, len(_string$)-1)
+
+      _counter% = 1
+      _line% += 10
+      _string$ = str$(_line%) + "DATA"
+      for indexL2% = 0 to L2% - 1
+        _string$ = _string$ + str$(int(L2b(indexL2%)*1000)/1000)+","
+      next
+      print left$(_string$, len(_string$)-1)
+
+      _counter% = 1
+      _line% += 10
+      _string$ = str$(_line%) + "DATA"
+      for indexL3% = 0 to L3% - 1
+        _string$ = _string$ + str$(int(L3b(indexL3%)*1000)/1000)+","
+      next
+      print left$(_string$, len(_string$)-1)
+
+
+      *spool
+      endproc
+
+
+      rem confusion matrix
+
+      def proc_reset_matrix
+      c_mat%() = 0
+      endproc
+
+
+      rem render matrix
+
+      def proc_plot_matrix(x_off, y_off, scale)
+      local xindex%, yindex%, max2, normRG, colRG, colB, x, y, _w
+
+      gcol 7
+      rectangle x_off, y_off, scale
+      gcol 0, 14
+      _w = scale / L3%
+
+      max2 = 1
+      for yindex% = 0 to L3%-1
+        for xindex% = 0 to L3%-1
+          if c_mat%(xindex%, yindex%) > max2 then max2 = c_mat%(xindex%, yindex%)
+        next
+      next
+      normRG = 255 / max2^0.8
+
+      for yindex% = 0 to L3%-1
+        for xindex% = 0 to L3%-1
+    
+          x = xindex%*(scale/L3%) + x_off
+          y = y_off + yindex%*(scale/L3%)
+    
+    
+          colRG = c_mat%(xindex%, yindex%)^0.8 * normRG
+          colB = colRG / 1.2 - 40
+          if colB > 215 then colB = 215
+          if colB < 0 then colB = 0
+          vdu 19, 14, 16, 255-colRG, 255-colRG/1.3, 255-colB
+    
+          gcol 14
+          rectangle fill x, y, _w+2
+          *font lucida console, 7
+          vdu 5
+          move x+12, y+38
+          gcol 0,0
+          if c_mat%(xindex%, yindex%) > max2*0.7 then gcol 7
+          print str$(c_mat%(xindex%, yindex%))
+    
+        next
+      next
+
+      *font lucida console, 9
+      for x = 0 to L3% - 1
+        gcol 8
+        move x*(scale/L3%) + x_off, y_off
+        draw x*(scale/L3%) + x_off,y_off+scale
+        gcol 7
+        move x*(scale/L3%) + x_off+_w/2-8, y_off - 10
+        print str$(x)
+      next
+      for y = 0 to L3% - 1
+        gcol 8
+        move x_off, y_off + y*(scale/L3%)
+        draw x_off + scale, y_off+ y*(scale/L3%)
+        gcol 7
+        move x_off-24, y_off + y*(scale/L3%)+_w/2+8
+        print str$(y)
+      next
+      *font lucida console, 14, B
+      move 24, y_off + scale/2
+      print "T"
+      move x_off + scale/2, 60
+      print "P"
+      vdu 4
+      endproc
+
+
+
