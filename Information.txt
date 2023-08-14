@@ -19,3 +19,8 @@ This program requires the full version of RT Russell's BBC BASIC for windows.
 
 4. Run the program and press escape. then in the console, type proc_train or press f1 and then hit enter. the program will then train on the specified minibatches showing a graphical display of the weights
    and activations of the network as shown in Figure 1 in the respository along with a Loss / Accuracy graph and confusion matrix which is updated at the end of each training Epoch.
+
+5. To export the parameters into the text file 'model.txt', (which should not be open when you do this or it won't save) run the program and press escape. Type proc_load_model("[model name]") to load your 
+   previously trained model. You can commence training her with proc_train or export it to the file with proc_export. the and biases are exported as BBC BASIC data statements which can be copied into the 
+   BBC compatible program. Bear in mind that a BBC or electron only has 32K of ram and as such you may have difficulty fitting the program and the networks parameters into memory with more than 10 neurons
+   in each hidden layer.
