@@ -27,3 +27,4 @@ This program requires the full version of RT Russell's BBC BASIC for windows.
    previously trained model. You can commence training her with proc_train or export it to the file with proc_export. the and biases are exported as BBC BASIC data statements which can be copied into the 
    BBC compatible program. Bear in mind that a BBC or electron only has 32K of ram and as such you may have difficulty fitting the program and the networks parameters into memory with more than 10 neurons
    in each hidden layer.
+
